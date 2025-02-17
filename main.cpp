@@ -16,7 +16,8 @@ int main()
     }
 
     cv::Mat frame;
-    while (cap.read(frame)) {
+    while (cap.read(frame))
+    {
         cv::Mat output = laneDetector.detectLanes(frame);
         cv::imshow("Lane Detection", output);
 
