@@ -24,7 +24,8 @@ cv::Mat LaneDetector::detectLanes(cv::Mat& frame)
 
     cv::imshow("Region of Interest", roi);
 
-    std::vector<cv::Vec4i> lines = ransacLineFitting(roi);
+    std::vector<cv::Vec4i> lines = applyHoughTransform(roi);
+    std::vector<cv::Vec4i> trackedLines = trackLanes(lines);
     drawLines(frame, lines);
     return frame;
 }
@@ -125,164 +126,153 @@ cv::Mat LaneDetector::applyEdgeDetection(const cv::Mat& blurredFrame) {
 
 // Region of Interest (Masking) 
 cv::Mat LaneDetector::regionOfInterest(const cv::Mat& edges) {
-    
     // Step 1: Create a black mask
-    cv::Mat mask = cv::Mat::zeros(edges.size(), edges.type());
+    cv::Mat mask = cv::Mat::zeros(edges.size(), CV_8UC1); // Ensure it's 8-bit single channel
 
-    // cv::Mat mask = cv::Mat::zeros(720, 1280, CV_8UC1);
-    // cv::Point p1(100, 100), p2(400, 300);
-
-    // Step 2: Define the four points of the trapezoid
+    // Step 2: Define the four points of the trapezoid correctly
     cv::Point points[4] = {
-        cv::Point(200, edges.rows), 
-        cv::Point(1100, edges.rows),
-        cv::Point(600, 400), 
-        cv::Point(500, 400)
+        cv::Point(200, edges.rows),     // Bottom-left
+        cv::Point(1100, edges.rows),    // Bottom-right
+        cv::Point(600, 400),            // Top-right
+        cv::Point(500, 400)             // Top-left
     };
 
-    // Step 3: Function to draw a line using Bresenham's Line Algorithm
-    auto drawLine = [&](cv::Mat& img, cv::Point p1, cv::Point p2) {
-        int x1 = p1.x, y1 = p1.y;
-        int x2 = p2.x, y2 = p2.y;
+    // Step 3: Convert points into an array for cv::fillPoly()
+    std::vector<cv::Point> roiPolygon(points, points + 4);
+    std::vector<std::vector<cv::Point>> fillCont = {roiPolygon};
 
-        int dx = abs(x2 - x1), dy = abs(y2 - y1);
-         
-        int sx = (x1 < x2) ? 1 : -1;
-        int sy = (y1 < y2) ? 1 : -1;
+    // Step 4: Fill the polygon with white (255) to create the ROI mask
+    cv::fillPoly(mask, fillCont, cv::Scalar(255));
 
-        int err = dx - dy;
-
-        while (true) {
-            img.at<uchar>(y1, x1) = 255; // Draw pixel
-            if (x1 == x2 && y1 == y2) break;
-            int e2 = 2 * err;
-
-            if (e2 > -dy) {
-                err -= dy; 
-                x1 += sx;
-            }
-
-            if (e2 < dx) {
-                err += dx;
-                y1 += sy;
-            }
-        }
-    };
-
-    // Step 4: Draw the four edges of the trapezoid
-    drawLine(mask, points[0], points[1]);
-    drawLine(mask, points[1], points[2]);
-    drawLine(mask, points[2], points[3]);
-    drawLine(mask, points[3], points[0]);
-
-    // drawLine(mask, p1, p2);
-
-    // Step 5: Fill the polygon manually
-    for (int y = 0; y < mask.rows; y++) {
-        bool inside = false;
-        for (int x = 0; x < mask.cols; x++) {
-            if (mask.at<uchar>(y, x) == 255) {
-                inside = !inside;
-            }
-            if (inside) {
-                mask.at<uchar>(y, x) = 255;
-            }
-        }
-    }
-
-    if (edges.empty()) {
-        std::cout << "Error: Edges image is empty!" << std::endl;
-    }
-
-    if (mask.empty()) {
-        std::cout << "Error: Mask image is empty!" << std::endl;
-    }
+    // Debugging checks
+    if (edges.empty()) std::cout << "Error: Edges image is empty!" << std::endl;
+    if (mask.empty()) std::cout << "Error: Mask image is empty!" << std::endl;
 
     std::cout << "Edges size: " << edges.size() << std::endl;
-    std::cout << "Mask Size: " << mask.size() << std::endl;
-
-    std::cout << "Edges size: " << edges.type() << std::endl;
+    std::cout << "Mask size: " << mask.size() << std::endl;
+    std::cout << "Edges type: " << edges.type() << std::endl;
     std::cout << "Mask type: " << mask.type() << std::endl;
 
-    // Step 6: Perform bitwise "AND"
-    cv::Mat maskedEdges = cv::Mat::zeros(edges.size(), edges.type());
-    for (int y = 0; y < edges.rows; y++) {
-        for (int x = 0; x < edges.cols; x++) {
-            if (mask.at<uchar>(y, x) == 255 && edges.at<uchar>(y, x) > 0) {
-                maskedEdges.at<uchar>(y, x) = edges.at<uchar>(y, x);
-            }else {
-                maskedEdges.at<uchar>(y, x) = 0;
-            }
-        }
-    }
+    // Step 5: Apply the mask using bitwise AND
+    cv::Mat maskedEdges;
+    cv::bitwise_and(edges, mask, maskedEdges);
 
-    // Step 7: return the masked images
     return maskedEdges;
-}   
+}
+ 
 
-// RANSAC line fitting method
-std::vector<cv::Vec4i> LaneDetector::ransacLineFitting(const cv::Mat& roi) {
+// Detect lines in the ROI using custom Hough Transform implementation
+std::vector<cv::Vec4i> LaneDetector::applyHoughTransform(const cv::Mat& maskedEdges){
     std::vector<cv::Vec4i> lines;
-    std::vector<cv::Point> edgePoints;
 
-    for (int y = 0; y < roi.rows; y++) {
-        for (int x = 0; x < roi.cols; x++) {
-            if (roi.at<uchar>(y, x) > 0) {
+    // Step 1: Collect Edge points
+    std::vector<cv::Point> edgePoints;
+    for (int y = 0; y < maskedEdges.rows; y++) {
+        for (int x = 0; x < maskedEdges.cols; x++) {
+            if (maskedEdges.at<uchar>(y, x) > 0) {
                 edgePoints.push_back(cv::Point(x, y));
             }
         }
     }
 
-    // Parameters for RANSAC
-    const int MAX_ITERATIONS = 100;
-    const double DISTANCE_THRESHOLD = 2.0;
-    const int MIN_INLIERS = 50;
-    int maxInliers = 0;
-    cv::Vec4i bestLine;
+    // Step 2: Hough space parameterization
+    int thetaBins = 180;
+    int rhoBins = static_cast<int>(sqrt(maskedEdges.cols * maskedEdges.cols + maskedEdges.rows * maskedEdges.rows));
+    std::vector<std::vector<int>> accumulator(rhoBins * 2, std::vector<int>(thetaBins, 0));
 
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    // Step 3: Accumulator Voting
+    for (const auto& point : edgePoints) {
+        for (int theta = 0; theta < thetaBins; theta++) {
+            double thetaRad = theta * CV_PI / 180.0;
+            int rho = static_cast<int>(point.x * cos(thetaRad) + point.y * sin(thetaRad)) + rhoBins;
+        }
+    }
 
-    for (int i = 0; i < MAX_ITERATIONS; i++) {
-        // Randomly select two points
-        std::uniform_int_distribution<> dis(0, edgePoints.size() - 1);
-        cv::Point p1 = edgePoints[dis(gen)];
-        cv::Point p2 = edgePoints[dis(gen)];
+    // Step 4: Identify peaks in accumulator
+    int threshold = 50;
+    for (int rho = 0; rho < 2 * rhoBins; rho++) {
+        for (int theta = 0; theta < thetaBins; theta++) {
+            if (accumulator[rho][theta] > threshold) {
+                double thetaRad = theta * CV_PI / 180.0;
+                double rhoVal = rho - rhoBins;
 
-        if (p1 == p2) continue;
+                // Convert polar to cartesian for line representation
+                cv::Point pt1, pt2;
+                double a = cos(thetaRad);
+                double b = sin(thetaRad);
+                double x0 = a * rhoVal;
+                double y0 = b * rhoVal;
+                pt1.x = cvRound(x0 + 1000 * (-b));
+                pt1.y = cvRound(y0 + 1000 * (a));
+                pt2.x = cvRound(x0 - 1000 * (-b));
+                pt2.y = cvRound(y0 - 1000 * (a));
 
-        // Line equation: ax + by + c = 0
-        double a = p1.y - p2.y;
-        double b = p2.x - p1.x;
-        double c = p1.x * p2.y - p2.x * p1.y;
-
-        // Count inliers
-        int inliers = 0;
-        for (const auto& p : edgePoints) {
-            double dist = std::fabs(a * p.x + b * p.y + c) / std::sqrt(a * a + b * b);
-            if (dist < DISTANCE_THRESHOLD) {
-                inliers++;
+                lines.push_back(cv::Vec4i(pt1.x, pt1.y, pt2.x, pt2.y));
             }
         }
-
-        if (inliers > maxInliers) {
-            maxInliers = inliers;
-            bestLine = cv::Vec4i(
-                static_cast<int>(p1.x), static_cast<int>(p1.y),
-                static_cast<int>(p2.x), static_cast<int>(p2.y)
-            );
-        }
     }
-
-    // If enough inliers are found, add the line to the result
-    if (maxInliers > MIN_INLIERS) {
-        lines.push_back(bestLine);
-    }
-
     return lines;
 }
 
-// Line drawing
+// Tracks and smooths lane lines over multiple frames
+// Averages the positions of the lines to reduce fitter
+std::vector<cv::Vec4i> LaneDetector::trackLanes(const std::vector<cv::Vec4i>& lines) {
+    if (lines.empty()) return previousLines;  // Return last known lines if none detected
+
+    std::vector<cv::Vec4i> averagedLines;
+    
+    // Store lanes for left and right separately
+    std::vector<cv::Vec4i> leftLanes, rightLanes;
+
+    for (const auto& line : lines) {
+        int x1 = line[0], y1 = line[1];
+        int x2 = line[2], y2 = line[3];
+
+        double slope = (y2 - y1) / static_cast<double>(x2 - x1 + 1e-6); // Avoid division by zero
+
+        // If slope is negative, it's a left lane; otherwise, it's a right lane
+        if (slope < -0.2) {  // Threshold to filter near-horizontal lines
+            leftLanes.push_back(line);
+        } else if (slope > 0.2) {
+            rightLanes.push_back(line);
+        }
+    }
+
+    // Function to compute averaged lane
+    auto averageLane = [](const std::vector<cv::Vec4i>& laneLines) -> cv::Vec4i {
+        if (laneLines.empty()) return {0, 0, 0, 0};
+
+        int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+        for (const auto& l : laneLines) {
+            x1 += l[0]; y1 += l[1];
+            x2 += l[2]; y2 += l[3];
+        }
+
+        int count = laneLines.size();
+        return {x1 / count, y1 / count, x2 / count, y2 / count};
+    };
+
+    cv::Vec4i leftLane = averageLane(leftLanes);
+    cv::Vec4i rightLane = averageLane(rightLanes);
+
+    if (leftLane != cv::Vec4i{0, 0, 0, 0}) averagedLines.push_back(leftLane);
+    if (rightLane != cv::Vec4i{0, 0, 0, 0}) averagedLines.push_back(rightLane);
+
+    // Smooth over previous frames
+    if (!previousLines.empty() && previousLines.size() == averagedLines.size()) {
+        for (size_t i = 0; i < averagedLines.size(); ++i) {
+            averagedLines[i][0] = (averagedLines[i][0] + previousLines[i][0]) / 2;
+            averagedLines[i][1] = (averagedLines[i][1] + previousLines[i][1]) / 2;
+            averagedLines[i][2] = (averagedLines[i][2] + previousLines[i][2]) / 2;
+            averagedLines[i][3] = (averagedLines[i][3] + previousLines[i][3]) / 2;
+        }
+    }
+
+    previousLines = averagedLines;
+    return averagedLines;
+}
+
+// Line    drawing
 void LaneDetector::drawLines(cv::Mat& frame, const std::vector<cv::Vec4i>& lines) {
     bool laneDeviation = false;
     int frameCenter = frame.cols / 2;
