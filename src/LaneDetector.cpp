@@ -37,7 +37,7 @@ cv::Mat LaneDetector::detectLanes(cv::Mat& frame)
     cv::Mat gray = applyGrayscale(frame);
     cv::Mat blurred = applyGaussianBlur(gray);
     cv::Mat edges = applyEdgeDetection(blurred);
-    cv::Mat roi = regionOfInterest(edges);
+    cv::Mat roi = regionOfInterest(edges, frame);
     std::vector<cv::Vec4i> lines = applyHoughTransform(roi);
     std::vector<cv::Vec4i> trackedLines = trackLanes(lines);
     drawLines(frame, trackedLines);
@@ -139,53 +139,53 @@ cv::Mat LaneDetector::applyEdgeDetection(const cv::Mat& blurredFrame) {
 }
 
 // Region of Interest (Masking) 
-cv::Mat LaneDetector::regionOfInterest(const cv::Mat& edges) {
-    // Step 1: Create a black mask
-    cv::Mat mask = cv::Mat::zeros(edges.size(), CV_8UC1); // Ensure it's 8-bit single channel
+cv::Mat LaneDetector::regionOfInterest(const cv::Mat& edges, const cv::Mat& frame) {
 
-    // Step 2: Define the three points of the region of interest (ROI) polygon
+    // 1) Create a single-channel mask (same size as edges) initialized to zeros
+    cv::Mat mask = cv::Mat::zeros(edges.size(), CV_8UC1);
 
-    /*@brief The below code defines a triangular region of interest (ROI).
-       For a trapezoidal region, one needs to add a fourth point to the polygon.
-       @example 
-        Bottom-left corner   (200, edges.rows),
-        Bottom-right corner  (1100, edges.rows),    
-        Top-right corner     (600, 400),            
-        Top-left corner      (500, 400)             
+    // 2) Define the points of the polygon (the lane region) in image coordinates
+    /*@brief The below code defines a triangular region of interest (ROI).          
+       For a triangular region:
+        - Bottom-left corner   (200, edges.rows)
+        - Bottom-right corner  (1100, edges.rows)
+        - Top corner           (550, 250) 
 
-       The current configuration represents a triangle with the following points:
-       - Bottom-left corner   (200, edges.rows)
-       - Bottom-right corner  (1100, edges.rows)
-       - Top corner           (550, 250) 
+        Note: the current configuration holds trapezoidal region of interest
     */
+   
+   int w = frame.cols;
+   int h = frame.rows;
+   
+   std::vector<cv::Point> lanePoints {
+       cv::Point(w * 0.10, h),        // bottom-left  (10% in from the left edge)
+       cv::Point(w * 0.40, h * 0.60), // top-left
+       cv::Point(w * 0.60, h * 0.60), // top-right
+       cv::Point(w * 0.90, h)         // bottom-right (10% in from the right edge)
+   };
 
-    cv::Point points[3] = {
-        cv::Point(200, edges.rows),     // Bottom-left
-        cv::Point(1100, edges.rows),    // Bottom-right
-        cv::Point(550, 250),            // Top
-    };
+    // 3) Fill the polygon with 255 in the mask (white = region of interest)
+    std::vector<std::vector<cv::Point>> fillCont = { lanePoints };
+    cv::fillPoly(mask, fillCont, cv::Scalar(255)); 
 
-    // Step 3: Convert points into an array for cv::fillPoly()
-    std::vector<cv::Point> roiPolygon(points, points + 3);
-    std::vector<std::vector<cv::Point>> fillCont = {roiPolygon};
+    // 4) Make an overlay copy of the original frame
+    cv::Mat overlay = frame.clone();
 
-    // Step 4: Fill the polygon with white (255) to create the ROI mask
-    cv::fillPoly(mask, fillCont, cv::Scalar(255));
+    // Fill the same polygon on this overlay with chosen BGR color
+    cv::Scalar laneColor(200, 230, 0);  // teal/turquoise-like color
+    cv::fillPoly(overlay, fillCont, laneColor);
 
-    // Debugging checks
-    if (edges.empty()) {
-        std::cout << "Error: Edges image is empty!" << std::endl;
-    }
-    if (mask.empty()) {
-        std::cout << "Error: Mask image is empty!" << std::endl;
-    }
+    // 5) Blend the overlay with the original frame (semi‐transparent)
+    double alpha = 0.4;  // transparency factor
+    cv::addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame);
 
-    // Step 5: Apply the mask using bitwise AND
+    // 6) Use the mask to keep only the ROI in the edges image
     cv::Mat maskedEdges;
     cv::bitwise_and(edges, mask, maskedEdges);
 
-    return maskedEdges;
+    return maskedEdges;  // This will be the final edges image restricted to the ROI
 }
+
 
 // Detect lines in the ROI using custom Hough Transform implementation
 std::vector<cv::Vec4i> LaneDetector::applyHoughTransform(const cv::Mat& maskedEdges){
@@ -332,7 +332,10 @@ void LaneDetector::drawLines(cv::Mat& frame, const std::vector<cv::Vec4i>& lines
     int laneCenter = 0;
     int detectedLines = 0;
     for (const auto& line : lines) {
-        cv::line(frame, cv::Point(line[0], line[1]), cv::Point(line[2], line[3]), cv::Scalar(0, 255, 0), 5);
+        // A teal/turquoise-like color in BGR might be:
+        cv::line(frame, cv::Point(line[0], line[1]),
+                        cv::Point(line[2], line[3]),
+                        cv::Scalar(200, 230, 0), 5);
         laneCenter += (line[0] + line[2]) / 2;
         detectedLines++;
     }

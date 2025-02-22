@@ -6,7 +6,7 @@ int main()
 {
     LaneDetector laneDetector;
 
-    std::string filename = "C:/LaneDepartureSystem/videos/test_video.mp4";
+    std::string filename = "C:/LaneDepartureSystem/videos/Test_video1.mp4";
 
     cv::VideoCapture cap(filename);
 
