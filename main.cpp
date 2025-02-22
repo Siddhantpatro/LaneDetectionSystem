@@ -1,5 +1,4 @@
 // Main entry point of the program 
-
 #include <opencv2/opencv.hpp>
 #include "inc/LaneDetector.hpp"
 
@@ -11,15 +10,13 @@ int main()
 
     cv::VideoCapture cap(filename);
 
-    if (!cap.isOpened())
-    {
+    if (!cap.isOpened()){
         std::cout << "Error opening video!" << filename << std::endl;
         return -1;
     }
 
     cv::Mat frame;
-    while (cap.read(frame))
-    {
+    while (cap.read(frame)){
         cv::Mat output = laneDetector.detectLanes(frame);
         cv::imshow("Lane Detection", output);
 

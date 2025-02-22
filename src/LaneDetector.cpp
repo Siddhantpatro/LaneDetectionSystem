@@ -1,3 +1,4 @@
+// Header files included
 #include "..\inc\LaneDetector.hpp"
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgproc.hpp>
@@ -5,28 +6,41 @@
 #include <cmath>
 #include <random>
 
+// Pi value
 constexpr double M_PI{3.14159265358979323846};
 
-// Calling the constructor and destructor
+// Constructor and Destructor for the LaneDetector class
 LaneDetector::LaneDetector() {}
 LaneDetector::~LaneDetector() {}
 
+/* 
+@brief Detects and tracks lanes in the provided frame using a series of image processing steps.
+
+This function processes the input frame to detect lanes using a series of image processing techniques:
+
+1. **applyGrayscale(frame)**: Converts the input frame into a grayscale image, as lane detection works better on single-channel images, simplifying the processing.
+2. **applyGaussianBlur(gray)**: Applies a Gaussian blur to the grayscale image to reduce noise and detail, helping to focus on the larger patterns like lane edges.
+3. **applyEdgeDetection(blurred)**: Performs edge detection (likely using Canny or Sobel), which highlights the edges of the lanes. This is a crucial step to distinguish the lanes from the rest of the image.
+4. **regionOfInterest(edges)**: Defines a region of interest (ROI) on the edge-detected image to focus on the area where lanes are likely to appear, removing irrelevant parts of the frame (such as the sky or road boundaries).
+5. **applyHoughTransform(roi)**: Applies the Hough Transform to detect straight lines in the region of interest. These lines are likely to represent the lanes.
+6. **trackLanes(lines)**: Tracks and filters the detected lines to identify the most likely lane markings. This function might apply further logic, such as line grouping or tracking, to ensure the lanes are consistently detected.
+7. **drawLines(frame, trackedLines)**: Draws the tracked lane lines onto the original frame to visualize the result.
+
+Finally, the function returns the frame with the detected and tracked lane lines drawn on it.
+
+@param frame Input frame (image) on which lane detection will be performed.
+@return cv::Mat The input frame with detected lanes drawn on it.
+*/
 
 cv::Mat LaneDetector::detectLanes(cv::Mat& frame)
 {
     cv::Mat gray = applyGrayscale(frame);
     cv::Mat blurred = applyGaussianBlur(gray);
     cv::Mat edges = applyEdgeDetection(blurred);
-
-    cv::imshow("edge Detection", edges);
-
     cv::Mat roi = regionOfInterest(edges);
-
-    cv::imshow("Region of Interest", roi);
-
     std::vector<cv::Vec4i> lines = applyHoughTransform(roi);
     std::vector<cv::Vec4i> trackedLines = trackLanes(lines);
-    drawLines(frame, lines);
+    drawLines(frame, trackedLines);
     return frame;
 }
 
@@ -129,29 +143,42 @@ cv::Mat LaneDetector::regionOfInterest(const cv::Mat& edges) {
     // Step 1: Create a black mask
     cv::Mat mask = cv::Mat::zeros(edges.size(), CV_8UC1); // Ensure it's 8-bit single channel
 
-    // Step 2: Define the four points of the trapezoid correctly
-    cv::Point points[4] = {
+    // Step 2: Define the three points of the region of interest (ROI) polygon
+
+    /*@brief The below code defines a triangular region of interest (ROI).
+       For a trapezoidal region, one needs to add a fourth point to the polygon.
+       @example 
+        Bottom-left corner   (200, edges.rows),
+        Bottom-right corner  (1100, edges.rows),    
+        Top-right corner     (600, 400),            
+        Top-left corner      (500, 400)             
+
+       The current configuration represents a triangle with the following points:
+       - Bottom-left corner   (200, edges.rows)
+       - Bottom-right corner  (1100, edges.rows)
+       - Top corner           (550, 250) 
+    */
+
+    cv::Point points[3] = {
         cv::Point(200, edges.rows),     // Bottom-left
         cv::Point(1100, edges.rows),    // Bottom-right
-        cv::Point(600, 400),            // Top-right
-        cv::Point(500, 400)             // Top-left
+        cv::Point(550, 250),            // Top
     };
 
     // Step 3: Convert points into an array for cv::fillPoly()
-    std::vector<cv::Point> roiPolygon(points, points + 4);
+    std::vector<cv::Point> roiPolygon(points, points + 3);
     std::vector<std::vector<cv::Point>> fillCont = {roiPolygon};
 
     // Step 4: Fill the polygon with white (255) to create the ROI mask
     cv::fillPoly(mask, fillCont, cv::Scalar(255));
 
     // Debugging checks
-    if (edges.empty()) std::cout << "Error: Edges image is empty!" << std::endl;
-    if (mask.empty()) std::cout << "Error: Mask image is empty!" << std::endl;
-
-    std::cout << "Edges size: " << edges.size() << std::endl;
-    std::cout << "Mask size: " << mask.size() << std::endl;
-    std::cout << "Edges type: " << edges.type() << std::endl;
-    std::cout << "Mask type: " << mask.type() << std::endl;
+    if (edges.empty()) {
+        std::cout << "Error: Edges image is empty!" << std::endl;
+    }
+    if (mask.empty()) {
+        std::cout << "Error: Mask image is empty!" << std::endl;
+    }
 
     // Step 5: Apply the mask using bitwise AND
     cv::Mat maskedEdges;
@@ -159,44 +186,64 @@ cv::Mat LaneDetector::regionOfInterest(const cv::Mat& edges) {
 
     return maskedEdges;
 }
- 
 
 // Detect lines in the ROI using custom Hough Transform implementation
 std::vector<cv::Vec4i> LaneDetector::applyHoughTransform(const cv::Mat& maskedEdges){
     std::vector<cv::Vec4i> lines;
 
-    // Step 1: Collect Edge points
-    std::vector<cv::Point> edgePoints;
-    for (int y = 0; y < maskedEdges.rows; y++) {
-        for (int x = 0; x < maskedEdges.cols; x++) {
-            if (maskedEdges.at<uchar>(y, x) > 0) {
-                edgePoints.push_back(cv::Point(x, y));
+    // Apply Hough Line Transform using openCV built in function
+    cv::HoughLinesP(maskedEdges, lines, 1, CV_PI / 180, 50, 50, 150.0);
+
+    return lines;
+
+    /*
+    @brief Below is the code for Manual Hough Transform implementation. The result was not as good as the above CV HoughLinesP function.
+
+    int width = maskedEdges.cols;
+    int height = maskedEdges.rows;
+
+    int rhoMax = sqrt(width * width + height * height);
+    int rhoBins = 2 * rhoMax;  
+    int thetaBins = 180;  
+
+    int threshold = 50;
+
+    std::vector<std::vector<int>> accumulator(rhoBins, std::vector<int>(thetaBins, 0));
+
+    // **Step 1: Voting in Accumulator**
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            if (maskedEdges.at<uchar>(y, x) > 0) {  
+                std::cout << maskedEdges.at<uchar>(y, x) << endl;
+                for (int theta = 0; theta < thetaBins; theta++) {
+                    double thetaRad = theta * CV_PI / 180.0;
+                    int rho = cvRound(x * cos(thetaRad) + y * sin(thetaRad)) + rhoMax;
+                    if (rho >= 0 && rho < rhoBins) {
+                        accumulator[rho][theta]++;
+                    }
+                }
             }
         }
     }
 
-    // Step 2: Hough space parameterization
-    int thetaBins = 180;
-    int rhoBins = static_cast<int>(sqrt(maskedEdges.cols * maskedEdges.cols + maskedEdges.rows * maskedEdges.rows));
-    std::vector<std::vector<int>> accumulator(rhoBins * 2, std::vector<int>(thetaBins, 0));
+    // **Step 2: Extract Local Maxima (Strong Peaks)**
+    for (int rho = 1; rho < rhoBins - 1; rho++) {
+        for (int theta = 1; theta < thetaBins - 1; theta++) {
+            int currentValue = accumulator[rho][theta];
 
-    // Step 3: Accumulator Voting
-    for (const auto& point : edgePoints) {
-        for (int theta = 0; theta < thetaBins; theta++) {
-            double thetaRad = theta * CV_PI / 180.0;
-            int rho = static_cast<int>(point.x * cos(thetaRad) + point.y * sin(thetaRad)) + rhoBins;
-        }
-    }
+            if (currentValue > threshold &&
+                currentValue >= accumulator[rho - 1][theta - 1] &&
+                currentValue >= accumulator[rho - 1][theta] &&
+                currentValue >= accumulator[rho - 1][theta + 1] &&
+                currentValue >= accumulator[rho][theta - 1] &&
+                currentValue >= accumulator[rho][theta + 1] &&
+                currentValue >= accumulator[rho + 1][theta - 1] &&
+                currentValue >= accumulator[rho + 1][theta] &&
+                currentValue >= accumulator[rho + 1][theta + 1]) {
 
-    // Step 4: Identify peaks in accumulator
-    int threshold = 50;
-    for (int rho = 0; rho < 2 * rhoBins; rho++) {
-        for (int theta = 0; theta < thetaBins; theta++) {
-            if (accumulator[rho][theta] > threshold) {
+                // **Step 3: Convert (rho, theta) to Cartesian**
                 double thetaRad = theta * CV_PI / 180.0;
-                double rhoVal = rho - rhoBins;
-
-                // Convert polar to cartesian for line representation
+                double rhoVal = rho - rhoMax;
                 cv::Point pt1, pt2;
                 double a = cos(thetaRad);
                 double b = sin(thetaRad);
@@ -210,14 +257,20 @@ std::vector<cv::Vec4i> LaneDetector::applyHoughTransform(const cv::Mat& maskedEd
                 lines.push_back(cv::Vec4i(pt1.x, pt1.y, pt2.x, pt2.y));
             }
         }
-    }
+    } 
     return lines;
+
+    Note: This manual implementation is a simple version of the Hough Transform, 
+        and the results may not be as robust as OpenCV's built-in HoughLinesP function.
+    */
 }
 
 // Tracks and smooths lane lines over multiple frames
 // Averages the positions of the lines to reduce fitter
 std::vector<cv::Vec4i> LaneDetector::trackLanes(const std::vector<cv::Vec4i>& lines) {
-    if (lines.empty()) return previousLines;  // Return last known lines if none detected
+    if (lines.empty()) {
+        return previousLines;  // Return last known lines if none detected
+    }
 
     std::vector<cv::Vec4i> averagedLines;
     
@@ -272,7 +325,7 @@ std::vector<cv::Vec4i> LaneDetector::trackLanes(const std::vector<cv::Vec4i>& li
     return averagedLines;
 }
 
-// Line    drawing
+// Line drawing
 void LaneDetector::drawLines(cv::Mat& frame, const std::vector<cv::Vec4i>& lines) {
     bool laneDeviation = false;
     int frameCenter = frame.cols / 2;
