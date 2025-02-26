@@ -20,7 +20,6 @@
     LaneDetectionProject/
     ├── src/                        # Source code files
     │   ├── LaneDetector.cpp        # Implementation of lane detection logic
-    │   ├── LaneDetector.hpp        # Header file for LaneDetector class
     ├── include/                    # Header files
     │   └── LaneDetector.hpp        # Class declaration for LaneDetector
     ├── CMakeLists.txt              # Build configuration for CMake
